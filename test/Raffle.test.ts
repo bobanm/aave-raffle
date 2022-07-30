@@ -4,10 +4,13 @@ import { mine, time } from '@nomicfoundation/hardhat-network-helpers'
 import { SignerWithAddress } from '@nomiclabs/hardhat-ethers/signers'
 import { Contract, ContractFactory } from 'ethers'
 
+import { POOL_ADDRESS, WETH_GATEWAY_ADDRESS, AWETH_ADDRESS } from '../app.config'
+
 describe('Raffle', function () {
 
     let raffleFactory: ContractFactory
     let raffle: Contract
+    let aweth: Contract
     let user: SignerWithAddress
 
     const amount = ethers.utils.parseEther('1').toBigInt()
@@ -16,23 +19,42 @@ describe('Raffle', function () {
     before(async function () {
         [user] = await ethers.getSigners()
         raffleFactory = await ethers.getContractFactory('Raffle', user)
+        aweth = await ethers.getContractAt('IERC20', AWETH_ADDRESS, user)
     })
 
     beforeEach(async function () {
-        raffle = await raffleFactory.deploy()
+        raffle = await raffleFactory.deploy(POOL_ADDRESS, WETH_GATEWAY_ADDRESS, AWETH_ADDRESS)
         await raffle.deployed()
     })
 
-    it('Deposits and withdraws balance', async function() {
+    it('Contract obtains aWETH after user deposits ETH', async function () {
+
+        const transaction = await user.sendTransaction({ to: raffle.address, value: amount })
+
+        expect(transaction).to.changeEtherBalance(user.address, -amount)
+        expect(await aweth.balanceOf(raffle.address)).to.be.equal(amount)
+    })
+
+    it('Contract earns interest after holding aWETH for 8 minutes', async function () {
+
+        await user.sendTransaction({ to: raffle.address, value: amount })
+        const aWethBalanceStart = await aweth.balanceOf(raffle.address)
+
+        expect(aWethBalanceStart).to.be.equal(amount)
         
-        await user.sendTransaction({ to: raffle.address, value: amount * 2n })
-        expect(await ethers.provider.getBalance(raffle.address)).to.changeEtherBalances([raffle, user], [amount * 2n, -amount * 2n])
+        await mine(24, mineOptions) // 24 blocks with 3 blocks per minute = 8 minutes
+        const aWethBalanceEnd = await aweth.balanceOf(raffle.address)
 
-        await raffle.withdraw(amount)
-        expect(await ethers.provider.getBalance(raffle.address)).to.changeEtherBalances([raffle, user], [amount, -amount])
+        expect(aWethBalanceEnd).to.be.greaterThan(aWethBalanceStart)
+    })
 
-        await raffle.withdraw(amount * 2n) // withdrawing more than available balance will cap the amount to total outstanding balance
-        expect(await ethers.provider.getBalance(raffle.address)).to.changeEtherBalances([raffle, user], [amount, -amount])
+    it('User deposits then withdraws ETH', async function () {
+
+        await user.sendTransaction({ to: raffle.address, value: amount })
+        const userBalance = (await raffle.players(user.address)).balance.toBigInt()
+
+        // withdrawing more than available balance will cap the amount to total outstanding balance
+        expect(await raffle.withdraw(userBalance * 2n)).to.changeEtherBalance(user, userBalance)
     })
 
     it('Reverts an attempt to withdraw from account with 0 balance', async function() {

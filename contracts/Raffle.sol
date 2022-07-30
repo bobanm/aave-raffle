@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: DUDE
 pragma solidity ^0.8.10;
 
+import '@aave/core-v3/contracts/interfaces/IPool.sol';
+import '@aave/periphery-v3/contracts/misc/interfaces/IWETHGateway.sol';
+import '@openzeppelin/contracts/interfaces/IERC20.sol';
+
 contract Raffle {
 
     struct Player {
@@ -15,9 +19,20 @@ contract Raffle {
     error ZeroBalance();
     error WithdrawalFailed();
 
-    mapping (address => Player) players;
-    uint totalDeposited;
-    uint totalAccruedValue;
+    IPool immutable pool;
+    IWETHGateway immutable wethGateway;
+    IERC20 immutable aweth;
+    
+    mapping (address => Player) public players;
+    uint public totalDeposited;
+    uint public totalAccruedValue;
+
+    constructor(address poolAddress, address wethGatewayAddress, address awethAddress) {
+
+        pool = IPool(poolAddress);
+        wethGateway = IWETHGateway(wethGatewayAddress);
+        aweth = IERC20(awethAddress);
+    }
 
     function withdraw(uint amount) external {
 
@@ -33,10 +48,8 @@ contract Raffle {
         totalDeposited -= amount;
         updatePlayer(amount, false);
 
-        (bool sent, ) = msg.sender.call{value: amount}('');
-        if (!sent) {
-            revert WithdrawalFailed();
-        }
+        aweth.approve(address(wethGateway), amount);
+        wethGateway.withdrawETH(address(pool), amount, msg.sender); // gateway withdraws directly to the user
     }
 
     receive() external payable {
@@ -44,6 +57,9 @@ contract Raffle {
         emit Deposited(msg.sender, msg.value, block.timestamp);
         totalDeposited += msg.value;
         updatePlayer(msg.value, true);
+
+        // wrap ETH and deposit to Aave on behalf of this contract
+        wethGateway.depositETH{value: msg.value}(address(pool), address(this), 0);
     }
 
     function updatePlayer(uint amount, bool isDeposit) internal {
